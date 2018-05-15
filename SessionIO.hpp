@@ -6,10 +6,12 @@
 
 #pragma once
 
-#include <cstdlib>
+
 #include <iostream>
 #include <vector>
 #include <functional>
+#include <map>
+
 
 #include <boost/asio.hpp>
 #include <boost/bind.hpp>
@@ -19,9 +21,13 @@
 #include <boost/property_tree/info_parser.hpp>
 #include <boost/chrono.hpp>
 #include <boost/thread/thread.hpp>
+#include <boost/shared_ptr.hpp>
+
+#include "sha1.hpp"
+
+
 
 using boost::asio::ip::udp;
-
 
 
 /**
@@ -53,6 +59,8 @@ private:
 	const char * host_port_ = { "9001" };	/// Порт хоста по умолчанию
 	const char * server_port_ = { "6000" }; /// Порт сигнального сервера по умолчанию
 	static bool OneReg;						/// Флаг регистрации 
+
+	SHA1 HashBlock_;
 	
 	/// Структура узла
 	struct PacketNode
@@ -71,42 +79,48 @@ private:
 	std::vector<std::string> СonfidantNodes_; /// Список доверенных узлов
 	std::string GeneralNode_;                 /// Главный узел
 
+
+
+
 	/// Перечисление уровней узла
 	enum LevelNodes {
-		Normal = 0x00,    /// Обычный узел
-		Сonfidant = 0x01, /// Доверенный узел
-		Main = 0x02,      /// Главный узел
-		Write = 0x03      /// Пишущий узел
+		Normal = 0,    /// Обычный узел
+		Сonfidant , /// Доверенный узел
+		Main ,      /// Главный узел
+		Write       /// Пишущий узел
 	};
 
 	/// Перечисление команд
 	enum CommandList {
-		Registration = 0x01,         /// Регистрация
-		UnRegistration = 0x02,		 /// Разрегистрация 
-		Redirect = 0x03,			 /// Перессылка
-		GetHash = 0x04,              /// Принять хэш
-		SendHash = 0x05,		     /// Отправить хэш
-		SendTransaction = 0x06,      /// Отправить транзакцию
-		GetTransaction = 0x07,       /// Принять транзакцию
-		SendTransactionList = 0x08,  /// Отправить транзакционный лист
-		GetTransactionList = 0x09,   /// Принять транзакционный лист
-		SendVector = 0x10,           /// Отправить вектор
-		GetVector = 0x11,			 /// Принять вектор
-		SendMatrix = 0x12,           /// Отправить матрицу
-		GetMatrix = 0x13,            /// Принять матрицу
-		SendBlock = 0x14,            /// Отправить блок данных
-		GetHashAll = 0x015,          /// Запрос хэш(а) со всех узлов
-		SendIpTable = 0x016          /// Разослать список доверенных узлов и главного всем узлам
+		Registration = 1,         /// Регистрация
+		UnRegistration ,		 /// Разрегистрация 
+		Redirect ,			 /// Перессылка
+		GetHash ,              /// Принять хэш
+		SendHash ,		     /// Отправить хэш
+		SendTransaction ,      /// Отправить транзакцию
+		GetTransaction ,       /// Принять транзакцию
+		SendTransactionList ,  /// Отправить транзакционный лист
+		GetTransactionList ,   /// Принять транзакционный лист
+		SendVector ,           /// Отправить вектор
+		GetVector ,			 /// Принять вектор
+		SendMatrix ,           /// Отправить матрицу
+		GetMatrix ,            /// Принять матрицу
+		SendBlock ,            /// Отправить блок данных
+		GetHashAll ,          /// Запрос хэш(а) со всех узлов
+		SendIpTable ,         /// Разослать список доверенных узлов и главного всем узлам
+		SinhroPacket ,
+		GiveHash2
 	};
 
 	/// Перечисление подкоманд
 	enum SubCommandList {
-		RegistrationLevelNode = 0x01, /// Принять список доверенных и главного узла
-		GiveHash = 0x02,              /// Запрос на хэш
-		GetBlock = 0x03,			  /// Запрос на блок данных
+		RegistrationLevelNode = 1, /// Принять список доверенных и главного узла
+		GiveHash ,              /// Запрос на хэш
+		GetBlock ,			  /// Запрос на блок данных
+		GetBlocks
 	};
 
-	enum { max_length = 65447, hash_length = 40, publicKey_length = 40 };
+	enum { max_length = 64312, hash_length = 40, publicKey_length = 256 };
 
 	/// Структура буфера приема/передачи информации
 	struct Packet
@@ -114,12 +128,24 @@ private:
 		uint8_t command;                        /// Команда
 		uint8_t subcommand;						/// Подкоманда
 		uint8_t version;						/// Версия
-		uint16_t header;						/// Номер заголовка
-		uint16_t countHeader;					/// Количество заголовков
 		uint8_t hash[hash_length];              /// Хэш передающего/принимающего узла
 		uint8_t publickKey[publicKey_length];   /// Публичный ключ передающего/принимающего узла
+		uint8_t HashBlock[hash_length];			/// Хэш блока
+		uint16_t header;						/// Номер заголовка
+		uint16_t countHeader;					/// Количество заголовков
 		uint8_t data[max_length];               /// Данные
 	}RecvBuffer, SendBuffer;
+
+	struct Storage
+	{
+		uint8_t HashBlock[hash_length];			 /// Хэш блока
+		uint16_t header;						 /// Номер заголовка
+		bool operator==(const Storage & param)
+		{
+			return !strncmp((const char*)this->HashBlock, (const char*)param.HashBlock, sizeof(HashBlock)) && 
+				this->header == param.header;
+		}
+	};
 
 	/*!
 	* \brief Метод иницилизации внутренних переменных.
@@ -143,23 +169,40 @@ private:
 	udp::resolver OutputServiceResolver_;		 /// Решатель сервера
 
 	boost::circular_buffer<PacketNode> NodesRing_;   /// Кольцевой буфер хранения узлов
-	boost::circular_buffer<std::string> BackData_;	 /// Кольцевой буфер хранения предыдущей информации
+	boost::circular_buffer<Storage> BackData_;	     /// Кольцевой буфер хранения предыдущей информации
 
-	boost::detail::spinlock SpinLock_;               /// Cпин-блокировка
+	//boost::detail::spinlock SpinLock_;               /// Cпин-блокировка
 	boost::property_tree::ptree config;              /// Класс инициализации
-	boost::asio::deadline_timer timer;				 /// Таймер
+	//boost::asio::deadline_timer timer;				 /// Таймер
 
 
-	
+	std::string tmp_hash1;
+	std::string tmp_hash2;
+	std::map<unsigned int, std::string> blocks;
+
 	/*!
 	* \brief Метод иницилизации внутренних переменных.
 	*/
 	void Initialization();
 
+	void InitMap();
+
 	/*!
 	* \brief Метод приема информации.
 	*/
-	void InputServiceHandleReceive(const boost::system::error_code& error, std::size_t bytes_transferred);
+	void InputServiceHandleReceive(const boost::system::error_code & error, std::size_t bytes_transferred);
+
+	void InputServiceHandleSend(const boost::system::error_code & error, std::size_t bytes_transferred);
+
+
+
+	void handle_send(boost::shared_ptr<std::string> /*message*/,
+		const boost::system::error_code& /*error*/,
+		std::size_t /*bytes_transferred*/);
+
+	void SendBlocks(const char * buff, unsigned int size);
+
+	void GetBlocks2(std::size_t bytes_transferred);
 
 	/*!
 	* \brief Метод выдачи информации.
@@ -219,7 +262,7 @@ private:
 	/*!
 	* \brief Метод генерации доверенных и главного узла.
 	*/
-	void GenTableRegistrationLevelNode(const char * data, unsigned size);
+	void GenTableRegistrationLevelNode( char * data, unsigned size);
 
 	/*!
 	* \brief Метод генерации случайного хэш.
@@ -229,7 +272,7 @@ private:
 	/*!
 	* \brief Метод запуска всех процессов.
 	*/
-	void Begin();
+	void StartReceive();
 
 	/*!
 	* \brief Метод пересылки информации узлам.
@@ -251,7 +294,12 @@ private:
 	*/
 	void RegistrationToServer();
 
+	void GenHashBlock(const char * buff, unsigned int size);
+
+	void SendSinhroPacket();
+
 	void DefiningNode(unsigned int init);
 	
+	std::function<void(char * buffer, unsigned int buf_size, char * ip_buffer, unsigned int ip_size, unsigned int cmd)> SolverSendData_;
 };
 
